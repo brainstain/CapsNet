@@ -34,15 +34,18 @@ class CapsNet:
         # Primary Caps Layer
         primarycaps = cl.PrimaryCapsule(dim_capsule=dim_primarycaps,
                                         n_channels=n_channels,
-                                        kernel_size=kernal_size)(conv1)
+                                        kernel_size=kernal_size,
+                                        name='primarycap')(conv1)
 
         # Digit Caps Layer
         digitcaps = cl.DigitCaps(num_capsule=n_class,
                                  dim_capsule=digit_caps_dim,
-                                 num_routing=routings)(primarycaps)
+                                 num_routing=routings,
+                                 name='digitcaps')(primarycaps)
 
         # replace each capsule with it's length
-        out_caps = layers.Lambda(lambda x1: backend.sqrt(backend.sum(backend.square(x1), -1)))(digitcaps)
+        out_caps = layers.Lambda(lambda x1: backend.sqrt(backend.sum(backend.square(x1), -1)),
+                                 name='capsnet')(digitcaps)
 
         # Decoder Network
         y = layers.Input(shape=(n_class,))
@@ -59,7 +62,7 @@ class CapsNet:
 
         # Finish Models
         self.train_model = models.Model([x, y], [out_caps, decoder(masked_by_y)])
-        self.eval_model = models.Model(x, decoder(masked))
+        self.eval_model = models.Model(x, [out_caps, decoder(masked)])
 
     @staticmethod
     def margin_loss(y_true, y_pred):
@@ -82,7 +85,9 @@ class CapsNet:
                                    batch_size=batch_size)
         checkpoint = callbacks.ModelCheckpoint(self.save_dir + '/weights-{epoch:02d}.h5',
                                                monitor='val_capsnet_acc',
-                                               save_best_only=True, save_weights_only=True, verbose=1)
+                                               save_best_only=True,
+                                               save_weights_only=True,
+                                               verbose=1)
         lr_decay = callbacks.LearningRateScheduler(schedule=lambda epoch: self.lr * (0.9 ** epoch))
 
         self.train_model.compile(optimizer=optimizers.Adam(lr=self.lr),
@@ -90,26 +95,28 @@ class CapsNet:
                                  loss_weights=[1., self.lam_recon],
                                  metrics={'capsnet': 'accuracy'})
 
+        testdata = data.get_all_test_data()
         self.train_model.fit_generator(generator=data.data_generator(),
                                        steps_per_epoch=steps_per_epoch,
                                        epochs=epochs,
+                                       validation_data=[testdata, [testdata[1], testdata[0]]],
                                        callbacks=[log, tb, checkpoint, lr_decay])
-
-        self.train_model.save_weights(self.save_dir + 'weights/trained_model.h5')
-        print('Trained model saved to \'%s/trained_model.h5\'' % self.save_dir)
 
         return self.train_model
 
     def test(self, data):
-        assert issubclass(data, model.TrainableData)
+        assert issubclass(type(data), model.TrainableData)
 
-        x_test, y_test = data.get_all_test_data()
-        y_pred, x_recon = model.predict(x_test, batch_size=100)
+        test_data = data.get_all_test_data()
+        assert np.shape(test_data[0])[1] == 784
+        assert type(test_data[0]) == np.ndarray
+        y_pred, x_recon = self.eval_model.predict(test_data[0], batch_size=100)
 
         print('-' * 30 + 'Begin: test' + '-' * 30)
-        print('Test acc:', np.sum(np.argmax(y_pred, 1) == np.argmax(y_test, 1)) / y_test.shape[0])
+        print('Test acc:', np.sum(np.argmax(y_pred, 1) == np.argmax(test_data[1], 1)) / test_data[1].shape[0])
 
-        img = combine_images(np.concatenate([x_test[:50], x_recon[:50]]))
+        input_images = test_data[0][:50]
+        img = combine_images(np.concatenate([input_images, x_recon[:50]]).reshape(100, 28, 28, 1))
         image = img * 255
         Image.fromarray(image.astype(np.uint8)).save(self.save_dir + "/real_and_recon.png")
         print()
@@ -117,3 +124,6 @@ class CapsNet:
         print('-' * 30 + 'End: test' + '-' * 30)
         plt.imshow(plt.imread(self.save_dir + "/real_and_recon.png"))
         plt.show()
+
+    def load_weights(self, path):
+        self.train_model.load_weights(path)

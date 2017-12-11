@@ -20,7 +20,7 @@ class MNIST(model.TrainableData):
         return self.mnist.train.next_batch(batch_size=self.batch_size)
 
     def get_all_test_data(self):
-        return self.mnist.train.images, self.mnist.train.images
+        return [self.mnist.test.images, self.mnist.test.labels]
 
     def get_data_element(self):
         return self.mnist
